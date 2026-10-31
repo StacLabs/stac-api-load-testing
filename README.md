@@ -5,18 +5,21 @@ Taurus and Locust load testing tools for stac-api backends.
 
 Requires Python >= 3.11.
 
-## Run stac-fastapi backends locally (elasticsearch|opensearch|pgstac|mongo)
+## Run stac-fastapi backends locally (elasticsearch|opensearch|pgstac|mongo|stac-os-rs)
 ```$ docker compose up elasticsearch```   
 ```$ docker compose up app-elasticsearch```
 
-Backend ports: pgstac `:8083`, elasticsearch `:8084`, opensearch `:8085`, mongo `:8086`
+Backend ports: pgstac `:8083`, elasticsearch `:8084`, opensearch `:8085`, mongo `:8086`, stac-os-rs `:8087`
 
 | backend | app image | database image |
 | --- | --- | --- |
 | pgstac | stac-fastapi.pgstac 7.2.0 (built locally) | ghcr.io/stac-utils/pgstac:v0.10.0 |
 | elasticsearch | ghcr.io/stac-utils/stac-fastapi-es:v8.1.1 | elasticsearch 9.3.2 |
-| opensearch | ghcr.io/stac-utils/stac-fastapi-os:v8.1.1 | opensearch 3.5.0 |
+| opensearch | ghcr.io/stac-utils/stac-fastapi-os:v8.1.1 | opensearch 3.8.0 |
 | mongo | stac-fastapi.mongo 3.2.0 (built locally) | mongo 7.0 |
+| stac-os-rs | ghcr.io/jonhealy1/stac-os-rs:0.2.0 | opensearch 3.8.0 |
+
+All datastores are given a ~2GB memory budget for comparable benchmarks: ES/OpenSearch heaps `-Xms2g -Xmx2g` with `bootstrap.memory_lock`, pgstac `shared_buffers=2GB`, mongo `--wiredTigerCacheSizeGB 2`. Ingest the same data into each backend before comparing (`stac-api-load-testing --ingest --api-address <url>`).
 
 ## Install locally for development
 ```$ pip install -e .```  

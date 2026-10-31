@@ -49,7 +49,7 @@ services:
       - PGDATABASE=postgis
     ports:
       - "5439:5432"
-    command: postgres -N 500
+    command: postgres -N 500 -c shared_buffers=2GB -c effective_cache_size=4GB
     healthcheck:
       test: ["CMD-SHELL", "pg_isready", "-d", "postgis", "-U", "username"]
       interval: 10s
@@ -87,7 +87,15 @@ services:
     image: docker.elastic.co/elasticsearch/elasticsearch:${ELASTICSEARCH_VERSION:-9.3.2}
     hostname: elasticsearch
     environment:
-      ES_JAVA_OPTS: -Xms512m -Xmx1g
+      ES_JAVA_OPTS: -Xms2g -Xmx2g
+      bootstrap.memory_lock: true
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+      nofile:
+        soft: 65536
+        hard: 65536
     volumes:
       - ./elasticsearch/config/elasticsearch.yml:/usr/share/elasticsearch/config/elasticsearch.yml
       - ./elasticsearch/snapshots:/usr/share/elasticsearch/snapshots
@@ -121,12 +129,20 @@ services:
 
   opensearch:
     container_name: os-container
-    image: opensearchproject/opensearch:${OPENSEARCH_VERSION:-3.5.0}
+    image: opensearchproject/opensearch:${OPENSEARCH_VERSION:-3.8.0}
     hostname: opensearch
     environment:
       - discovery.type=single-node
       - plugins.security.disabled=true
-      - OPENSEARCH_JAVA_OPTS=-Xms512m -Xmx512m
+      - bootstrap.memory_lock=true
+      - OPENSEARCH_JAVA_OPTS=-Xms2g -Xmx2g
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+      nofile:
+        soft: 65536
+        hard: 65536
     volumes:
       - ./opensearch/config/opensearch.yml:/usr/share/opensearch/config/opensearch.yml
       - ./opensearch/snapshots:/usr/share/opensearch/snapshots
@@ -168,3 +184,44 @@ services:
       - MONGO_INITDB_ROOT_PASSWORD=example
     ports:
       - "27017:27017"
+    command: ["mongod", "--wiredTigerCacheSizeGB", "2"]
+
+  app-stac-os-rs:
+    container_name: stac-os-rs
+    image: ghcr.io/jonhealy1/stac-os-rs:0.2.0
+    restart: always
+    environment:
+      - OPENSEARCH_URL=http://opensearch-rs:9200
+      - ENABLE_TRANSACTIONS_EXTENSIONS=true
+      - ENABLE_COLLECTIONS_SEARCH_ROUTE=true
+    ports:
+      - "8087:3000"
+    depends_on:
+      opensearch-rs:
+        condition: service_healthy
+
+  opensearch-rs:
+    container_name: stac-os-rs-opensearch
+    image: opensearchproject/opensearch:${OPENSEARCH_VERSION:-3.8.0}
+    hostname: opensearch-rs
+    environment:
+      - cluster.name=stac-os-rs-cluster
+      - node.name=osrs-node1
+      - discovery.type=single-node
+      - bootstrap.memory_lock=true
+      - DISABLE_SECURITY_PLUGIN=true
+      - OPENSEARCH_JAVA_OPTS=-Xms2g -Xmx2g
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+      nofile:
+        soft: 65536
+        hard: 65536
+    ports:
+      - "9203:9200"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:9200/_cluster/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
