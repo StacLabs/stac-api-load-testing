@@ -1,13 +1,19 @@
 """stac-api-load-testing cli tool."""
+
 import os
 import re
 import subprocess
+from importlib import resources
 
 import click
-import pkg_resources  # type: ignore
-import yaml  # type: ignore
+import yaml
 
 from .data_loader import data_loader
+
+
+def _package_resource(*parts: str) -> str:
+    """Return the filesystem path to a resource bundled in this package."""
+    return str(resources.files("stac_api_load_testing").joinpath(*parts))
 
 
 def generate_taurus_config(api_url: str, concurrency: int, ramp_up, iterations) -> str:
@@ -23,12 +29,8 @@ def generate_taurus_config(api_url: str, concurrency: int, ramp_up, iterations) 
     Returns:
         str: The path to the generated Taurus configuration file.
     """
-    template_path = pkg_resources.resource_filename(
-        __name__, "config_files/taurus_locust.yml"
-    )
-    locustfile_path = pkg_resources.resource_filename(
-        __name__, "config_files/locustfile.py"
-    )
+    template_path = _package_resource("config_files", "taurus_locust.yml")
+    locustfile_path = _package_resource("config_files", "locustfile.py")
 
     safe_api_url = re.sub(r"[^a-zA-Z0-9]+", "_", api_url)
     output_path = f"taurus_config_{safe_api_url}.yml"
@@ -87,7 +89,7 @@ def generate_taurus_config(api_url: str, concurrency: int, ramp_up, iterations) 
     default="http://localhost:8080",
     help="Specify the STAC API URL to test against.",
 )
-@click.version_option(version="0.2.0")
+@click.version_option(version="0.3.0")
 def main(
     ingest: bool,
     locust: bool,
@@ -119,9 +121,7 @@ def main(
         data_loader.load_items(stac_api_base_url=api_address)
     elif locust:
         # Execute Locust load tests
-        locust_file_path = pkg_resources.resource_filename(
-            __name__, "config_files/locustfile.py"
-        )
+        locust_file_path = _package_resource("config_files", "locustfile.py")
         subprocess.run(
             ["locust", "--locustfile", locust_file_path, "--host", api_address],
             check=True,

@@ -11,4 +11,4 @@ settings:
 scenarios:
   default:
     script: locustfile.py
-    default-address: http:/localhost:8082
+    default-address: http://localhost:8082

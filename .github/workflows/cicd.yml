@@ -1,4 +1,4 @@
-name: stac-fastapi-mongo
+name: cicd
 
 on:
   push:
@@ -16,7 +16,7 @@ jobs:
 
     strategy:
       matrix:
-        python-version: [ "3.8", "3.9", "3.10", "3.11"]
+        python-version: ["3.11", "3.12", "3.13"]
 
     name: Python ${{ matrix.python-version }} testing
 
@@ -29,5 +29,8 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
+
       - name: Lint code
-        uses: pre-commit/action@v3.0.1
+        run: |
+          pip install pre-commit
+          pre-commit run --all-files

@@ -1,17 +1,17 @@
 """data loader."""
+
 import json
+from importlib import resources
 
 import click
 import requests
-from pkg_resources import resource_filename  # type: ignore
 
 
 def load_data(filename):
     """Load json data."""
     try:
-        # Adjust the path to reflect the setup_data location within the data_loader directory
-        file_path = resource_filename(__name__, f"setup_data/{filename}")
-        with open(file_path, "r") as file:
+        file_path = resources.files(__package__).joinpath(f"setup_data/{filename}")
+        with file_path.open("r") as file:
             return json.load(file)
     except FileNotFoundError:
         click.secho(f"File {filename} not found in package resources.", fg="red")
