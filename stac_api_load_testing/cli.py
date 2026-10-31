@@ -1,9 +1,14 @@
 """stac-api-load-testing cli tool."""
 
+import csv
 import os
 import re
+import shutil
 import subprocess
+import sys
+import tempfile
 from importlib import resources
+from pathlib import Path
 
 import click
 import yaml
@@ -14,6 +19,11 @@ from .data_loader import data_loader
 def _package_resource(*parts: str) -> str:
     """Return the filesystem path to a resource bundled in this package."""
     return str(resources.files("stac_api_load_testing").joinpath(*parts))
+
+
+def _tool_path(name: str) -> str:
+    """Resolve a console script on PATH, falling back to this env's bin dir."""
+    return shutil.which(name) or str(Path(sys.executable).parent / name)
 
 
 def generate_taurus_config(api_url: str, concurrency: int, ramp_up, iterations) -> str:
@@ -55,6 +65,111 @@ def generate_taurus_config(api_url: str, concurrency: int, ramp_up, iterations) 
         return None
 
 
+def _read_aggregated_stats(csv_path: str) -> dict:
+    """Return the 'Aggregated' row from a locust *_stats.csv file."""
+    with open(csv_path, newline="") as file:
+        for row in csv.DictReader(file):
+            if row.get("Name") == "Aggregated":
+                return row
+    return {}
+
+
+def run_benchmark(
+    api_addresses: list,
+    concurrency_levels: list,
+    spawn_rate: int,
+    run_time: str,
+    output: str,
+):
+    """
+    Run headless Locust benchmark sweeps against one or more STAC APIs.
+
+    For each API address, a headless locust run is executed at every
+    concurrency level. Aggregated statistics are collected from locust's
+    CSV output and printed as a comparison table.
+
+    Args:
+        api_addresses (list): STAC API base URLs to benchmark, in order.
+        concurrency_levels (list): Concurrent user counts to sweep.
+        spawn_rate (int): Users spawned per second in each run.
+        run_time (str): Duration of each run, in locust notation (e.g. '30s').
+        output (str): Optional path to write aggregated results as CSV.
+    """
+    locustfile_path = _package_resource("config_files", "locustfile.py")
+    results = []
+
+    for address in api_addresses:
+        for users in concurrency_levels:
+            click.secho(f"\n>>> {address} @ {users} users for {run_time}", fg="cyan")
+            with tempfile.TemporaryDirectory() as tmpdir:
+                csv_prefix = os.path.join(tmpdir, "locust")
+                stats_csv = f"{csv_prefix}_stats.csv"
+                # locust exits non-zero when requests fail; under load that is
+                # data (backend errors), not a benchmark tool error.
+                subprocess.run(
+                    [
+                        _tool_path("locust"),
+                        "--locustfile",
+                        locustfile_path,
+                        "--host",
+                        address,
+                        "--headless",
+                        "-u",
+                        str(users),
+                        "-r",
+                        str(spawn_rate),
+                        "-t",
+                        run_time,
+                        "--csv",
+                        csv_prefix,
+                        "--only-summary",
+                    ]
+                )
+
+                if not os.path.exists(stats_csv):
+                    click.secho(
+                        f"no stats produced for {address} @ {users} users",
+                        fg="red",
+                    )
+                    continue
+
+                stats = _read_aggregated_stats(stats_csv)
+                if stats:
+                    results.append(
+                        {
+                            "api": address,
+                            "users": users,
+                            "requests": stats.get("Request Count"),
+                            "failures": stats.get("Failure Count"),
+                            "median_ms": stats.get("Median Response Time"),
+                            "p95_ms": stats.get("95%"),
+                            "p99_ms": stats.get("99%"),
+                            "rps": round(float(stats.get("Requests/s") or 0), 1),
+                        }
+                    )
+
+    if not results:
+        click.secho("No benchmark results collected.", fg="red")
+        return
+
+    header = f"{'api':<26}{'users':>7}{'reqs':>9}{'fails':>7}{'med':>8}{'p95':>8}{'p99':>8}{'rps':>9}"
+    click.echo("\n" + header)
+    click.echo("-" * len(header))
+    for row in results:
+        click.echo(
+            f"{row['api']:<26}{row['users']:>7}{row['requests']:>9}"
+            f"{row['failures']:>7}{row['median_ms']:>8}{row['p95_ms']:>8}"
+            f"{row['p99_ms']:>8}{row['rps']:>9}"
+        )
+
+    if output:
+        with open(output, "w", newline="") as file:
+            writer = csv.DictWriter(file, fieldnames=list(results[0].keys()))
+            writer.writeheader()
+            writer.writerows(results)
+        click.secho(f"\nResults written to {output}", fg="green")
+
+
 @click.command()
 @click.option(
     "-i", "--ingest", is_flag=True, help="Ingest sample data into the STAC API."
@@ -87,7 +202,37 @@ def generate_taurus_config(api_url: str, concurrency: int, ramp_up, iterations) 
     "-a",
     "--api-address",
     default="http://localhost:8080",
-    help="Specify the STAC API URL to test against.",
+    help="Specify the STAC API URL to test against. Accepts a comma-separated list for --benchmark.",
+)
+@click.option(
+    "-b",
+    "--benchmark",
+    is_flag=True,
+    help="Run a headless locust benchmark sweep against the STAC API.",
+)
+@click.option(
+    "-u",
+    "--users",
+    default="10,50,100",
+    help="Comma-separated concurrency levels for --benchmark.",
+)
+@click.option(
+    "--spawn-rate",
+    default=10,
+    help="Users spawned per second for --benchmark.",
+    type=int,
+)
+@click.option(
+    "--run-time",
+    default="30s",
+    help="Duration of each --benchmark run, in locust notation (e.g. '30s', '1m').",
+)
+@click.option(
+    "-o",
+    "--output",
+    default=None,
+    help="Write aggregated --benchmark results to a CSV file.",
+    type=click.Path(),
 )
 @click.version_option(version="0.3.0")
 def main(
@@ -98,6 +243,11 @@ def main(
     concurrency: int,
     ramp_up: str,
     iterations: int,
+    benchmark: bool,
+    users: str,
+    spawn_rate: int,
+    run_time: str,
+    output: str,
 ):
     """
     Entry point for the stac-api-load-testing CLI tool.
@@ -112,7 +262,12 @@ def main(
         concurrency (int): Specifies the number of concurrent users for Taurus testing. Default is 10.
         ramp_up (str): Specifies the ramp-up period for Taurus testing, in Taurus notation (e.g., '1m' for 1 minute). Default is '1m'.
         iterations (int): Specifies the number of iterations each virtual user will execute in Taurus testing. Default is 100.
-        api_address (str): The base URL of the STAC API to be tested.
+        api_address (str): The base URL of the STAC API to be tested. Comma-separated list allowed for benchmark.
+        benchmark (bool): If True, run headless locust runs sweeping --users levels and print a comparison table.
+        users (str): Comma-separated concurrency levels for benchmark. Default '10,50,100'.
+        spawn_rate (int): Users spawned per second in each benchmark run. Default 10.
+        run_time (str): Duration of each benchmark run in locust notation. Default '30s'.
+        output (str): Optional CSV file path for aggregated benchmark results.
     """
     os.environ["LOCUST_HOST"] = api_address
 
@@ -123,7 +278,13 @@ def main(
         # Execute Locust load tests
         locust_file_path = _package_resource("config_files", "locustfile.py")
         subprocess.run(
-            ["locust", "--locustfile", locust_file_path, "--host", api_address],
+            [
+                _tool_path("locust"),
+                "--locustfile",
+                locust_file_path,
+                "--host",
+                api_address,
+            ],
             check=True,
         )
     elif taurus:
@@ -133,10 +294,14 @@ def main(
         )
         if config_file_path:
             try:
-                subprocess.run(["bzt", config_file_path], check=True)
+                subprocess.run([_tool_path("bzt"), config_file_path], check=True)
             finally:
                 if os.path.exists(config_file_path):
                     os.remove(config_file_path)  # Cleanup after running
+    elif benchmark:
+        concurrency_levels = [int(x) for x in users.split(",")]
+        api_addresses = [a.strip() for a in api_address.split(",")]
+        run_benchmark(api_addresses, concurrency_levels, spawn_rate, run_time, output)
 
 
 if __name__ == "__main__":

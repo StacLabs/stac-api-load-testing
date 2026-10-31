@@ -21,6 +21,7 @@ and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.
 
 - Added mongodb docker files for local testing [#6](https://github.com/Healy-Hyperspatial/stac-api-load-testing/pull/6)
 - Added `stac-os-rs` backend (`ghcr.io/jonhealy1/stac-os-rs:0.2.0` on `:8087` with a dedicated OpenSearch 3.8.0 datastore)
+- Added `--benchmark` mode: headless locust concurrency sweep with a comparison table and optional CSV output (`--users`, `--spawn-rate`, `--run-time`, `-o/--output`; comma-separated `--api-address` compares multiple backends)
 
 ### Changed
 

@@ -56,6 +56,16 @@ Options:
   -r, --ramp-up TEXT         Ramp-up time for Taurus option.
   -n, --iterations INTEGER   Number of iterations for Taurus option.
   -a, --api-address TEXT     Specify the STAC API URL to test against.
+                             Accepts a comma-separated list for --benchmark.
+  -b, --benchmark            Run a headless locust benchmark sweep against the
+                             STAC API.
+  -u, --users TEXT           Comma-separated concurrency levels for
+                             --benchmark.
+  --spawn-rate INTEGER       Users spawned per second for --benchmark.
+  --run-time TEXT            Duration of each --benchmark run, in locust
+                             notation (e.g. '30s', '1m').
+  -o, --output PATH          Write aggregated --benchmark results to a CSV
+                             file.
   --version                  Show the version and exit.
   --help                     Show this message and exit.
 ```
@@ -70,6 +80,16 @@ Options:
 
 ## Inside of Taurus Wrapper
 ```$ stac-api-load-testing --taurus --api-address http://localhost:8084```
+
+## Benchmark / compare backends
+Runs headless locust sweeps at each concurrency level and prints a comparison
+table. Ingest into each backend first, then run them one at a time:
+
+```$ stac-api-load-testing --benchmark --api-address http://localhost:8085 --users 10,50,100 --run-time 1m```
+
+Compare multiple backends in one command (comma-separated addresses):
+
+```$ stac-api-load-testing --benchmark --api-address http://localhost:8085,http://localhost:8087 --users 10,50,100 --run-time 1m -o results.csv```
 
 ## Debugging Locust tasks using a single simulated user
 ```$ python stac_api_load_testing/config_files/locustfile.py```
