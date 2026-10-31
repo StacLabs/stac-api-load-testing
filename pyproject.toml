@@ -1,0 +1,35 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "stac-api-load-testing"
+version = "0.3.0"
+description = "Load testing for stac compliant apis"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "Jonathan Healy", email = "jonathan.d.healy@gmail.com" }]
+dependencies = [
+    "click>=8.1",
+    "locust>=2.32,<3",
+    "requests>=2.31",
+    "pyyaml>=6.0",
+    "bzt>=1.17.0",
+]
+
+[project.optional-dependencies]
+test = ["pytest"]
+
+[project.urls]
+Homepage = "https://github.com/Healy-Hyperspatial/stac-api-load-testing"
+
+[project.scripts]
+stac-api-load-testing = "stac_api_load_testing.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["stac_api_load_testing*"]
+
+[tool.setuptools.package-data]
+stac_api_load_testing = ["config_files/*"]
+"stac_api_load_testing.data_loader" = ["setup_data/*"]

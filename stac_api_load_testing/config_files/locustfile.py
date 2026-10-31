@@ -1,10 +1,11 @@
 """stac-api-load-testing locustfile.py config."""
+
 import json
 import os
 import random
+from importlib import resources
 
 from locust import HttpUser, run_single_user, tag, task
-from pkg_resources import resource_filename  # type: ignore
 
 test_item = {
     "stac_version": "1.0.0",
@@ -102,10 +103,10 @@ class WebsiteTestUser(HttpUser):
             dict: A dictionary containing the loaded JSON data.
         """
         try:
-            file_path = resource_filename(
-                "stac_api_load_testing.data_loader", f"setup_data/{file}"
+            file_path = resources.files("stac_api_load_testing.data_loader").joinpath(
+                f"setup_data/{file}"
             )
-            with open(file_path, "r") as file:
+            with file_path.open("r") as file:
                 return json.load(file)
         except FileNotFoundError as e:
             print(f"File not found: {e}")
