@@ -8,7 +8,6 @@ from datetime import datetime, timedelta
 from importlib import resources
 
 from gevent.lock import Semaphore
-
 from locust import HttpUser, run_single_user, tag, task
 
 SEARCH_LIMIT = 10
