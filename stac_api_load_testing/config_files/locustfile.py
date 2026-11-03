@@ -3,10 +3,15 @@
 import json
 import os
 import random
+import time
 from datetime import datetime, timedelta
 from importlib import resources
 
+from gevent.lock import Semaphore
+
 from locust import HttpUser, run_single_user, tag, task
+
+SEARCH_LIMIT = 10
 
 test_item = {
     "stac_version": "1.0.0",
@@ -84,31 +89,63 @@ class WebsiteTestUser(HttpUser):
 
     host = os.getenv("LOCUST_HOST", "http://localhost:8083")
     default_load_multiplier = 1
+    _catalog_cache = None
+    _catalog_lock = Semaphore()
 
     def on_start(self):
-        """Cache collection ids, item ids, bboxes, and temporal extents per user."""
-        self.collection_ids = self.get_collection_ids()
-        self.item_ids = {}
-        self.bboxes = {}
-        self.temporal_intervals = {}
-        for collection_id in self.collection_ids:
-            items_response = self.client.get(
-                f"/collections/{collection_id}/items?limit=500",
-                name="get-items-on-start",
-            )
-            self.item_ids[collection_id] = [
-                f["id"] for f in items_response.json()["features"]
-            ]
-            collection_response = self.client.get(
-                f"/collections/{collection_id}", name="get-collection"
-            )
-            collection_body = collection_response.json()
-            self.bboxes[collection_id] = collection_body["extent"]["spatial"][
-                "bbox"
-            ][0]
-            self.temporal_intervals[collection_id] = collection_body["extent"][
-                "temporal"
-            ]["interval"][0]
+        """Cache collection ids, item ids, bboxes, and temporal extents."""
+        with WebsiteTestUser._catalog_lock:
+            if WebsiteTestUser._catalog_cache is None:
+                WebsiteTestUser._catalog_cache = self._discover_catalog()
+        cache = WebsiteTestUser._catalog_cache
+        self.collection_ids = cache["ids"]
+        self.item_ids = cache["item_ids"]
+        self.bboxes = cache["bboxes"]
+        self.temporal_intervals = cache["temporal"]
+
+    def _discover_catalog(self):
+        """
+        Fetch collections, item ids, and extents once per locust worker process.
+
+        Retries briefly on failure and degrades to an empty catalog so a
+        struggling backend does not trigger a user respawn loop.
+        """
+        for attempt in range(3):
+            try:
+                collection_ids = self.get_collection_ids()
+                item_ids, bboxes, temporal = {}, {}, {}
+                for collection_id in collection_ids:
+                    items_response = self.client.get(
+                        f"/collections/{collection_id}/items?limit=500",
+                        name="get-items-on-start",
+                    )
+                    item_ids[collection_id] = [
+                        f["id"] for f in items_response.json()["features"]
+                    ]
+                    collection_response = self.client.get(
+                        f"/collections/{collection_id}", name="get-collection"
+                    )
+                    collection_body = collection_response.json()
+                    bboxes[collection_id] = collection_body["extent"]["spatial"][
+                        "bbox"
+                    ][0]
+                    temporal[collection_id] = collection_body["extent"]["temporal"][
+                        "interval"
+                    ][0]
+                return {
+                    "ids": collection_ids,
+                    "item_ids": item_ids,
+                    "bboxes": bboxes,
+                    "temporal": temporal,
+                }
+            except Exception:
+                if attempt < 2:
+                    time.sleep(1)
+        return {"ids": [], "item_ids": {}, "bboxes": {}, "temporal": {}}
+
+    def _random_collection_id(self):
+        """Pick a random cached collection id, or None if discovery failed."""
+        return random.choice(self.collection_ids) if self.collection_ids else None
 
     def on_stop(self):
         """Clean up resources after tasks are completed."""
@@ -248,8 +285,13 @@ class WebsiteTestUser(HttpUser):
         Selects a random item from a random collection, using the ids
         cached in on_start.
         """
-        collection_id = random.choice(self.collection_ids)
-        random_id = random.choice(self.item_ids[collection_id])
+        collection_id = self._random_collection_id()
+        if collection_id is None:
+            return
+        ids = self.item_ids.get(collection_id)
+        if not ids:
+            return
+        random_id = random.choice(ids)
         self.client.get(
             f"/collections/{collection_id}/items/{random_id}", name="get-item"
         )
@@ -279,7 +321,10 @@ class WebsiteTestUser(HttpUser):
         """
         self.client.post(
             "/search",
-            json={"bbox": [16.171875, -79.095963, 179.992188, 19.824820]},
+            json={
+                "bbox": [16.171875, -79.095963, 179.992188, 19.824820],
+                "limit": SEARCH_LIMIT,
+            },
             name="post-search-bbox",
         )
 
@@ -300,6 +345,7 @@ class WebsiteTestUser(HttpUser):
             json={
                 "collections": ["test-collection"],
                 "intersects": {"type": "Point", "coordinates": [150.04, -33.14]},
+                "limit": SEARCH_LIMIT,
             },
             name="post-search-intersects",
         )
@@ -314,18 +360,21 @@ class WebsiteTestUser(HttpUser):
         within a specific collection identified by its ID. The choice between GET or POST
         and the handling of the response showcases flexibility in API interaction.
         """
-        collection_id = random.choice(self.collection_ids)
+        collection_id = self._random_collection_id()
+        if collection_id is None:
+            return
 
         # Randomize GET / POST
         get_post = random.choice(["GET", "POST"])
         if get_post == "GET":
             items_response = self.client.get(
-                f"/search?collections={collection_id}", name="get-search-collection"
+                f"/search?collections={collection_id}&limit={SEARCH_LIMIT}",
+                name="get-search-collection",
             )
         elif get_post == "POST":
             items_response = self.client.post(
                 "/search",
-                json={"collections": [collection_id]},
+                json={"collections": [collection_id], "limit": SEARCH_LIMIT},
                 name="post-search-collection",
             )
 
@@ -342,7 +391,9 @@ class WebsiteTestUser(HttpUser):
         to find items that intersect with this point, also applying a randomized sort order.
         """
         # Get the bbox of a random collection
-        collection_id = random.choice(self.collection_ids)
+        collection_id = self._random_collection_id()
+        if collection_id is None:
+            return
         bbox = self.bboxes[collection_id]
 
         # Create random point inside bbox for /search intersects
@@ -357,6 +408,7 @@ class WebsiteTestUser(HttpUser):
                 "collections": [collection_id],
                 "intersects": {"type": "Point", "coordinates": [x, y]},
                 "sortby": sortby,
+                "limit": SEARCH_LIMIT,
             },
             name="post-multisearch-intersects",
         )
@@ -375,7 +427,9 @@ class WebsiteTestUser(HttpUser):
         applying a randomized sort order.
         """
         # Get the bbox of a random collection
-        collection_id = random.choice(self.collection_ids)
+        collection_id = self._random_collection_id()
+        if collection_id is None:
+            return
         bbox = self.bboxes[collection_id]
 
         # Create a random search bbox inside collection bbox
@@ -390,7 +444,7 @@ class WebsiteTestUser(HttpUser):
             search_bbox_str = ",".join([str(x) for x in search_bbox])
             items_response = self.client.get(
                 f"/search?collections={collection_id}&bbox={search_bbox_str}"
-                + f"&sortby={','.join(sortby)}",
+                + f"&sortby={','.join(sortby)}&limit={SEARCH_LIMIT}",
                 name="get-multisearch-bbox",
             )
         elif get_post == "POST":
@@ -400,6 +454,7 @@ class WebsiteTestUser(HttpUser):
                     "collections": [collection_id],
                     "bbox": search_bbox,
                     "sortby": sortby,
+                    "limit": SEARCH_LIMIT,
                 },
                 name="post-multisearch-bbox",
             )
@@ -415,13 +470,16 @@ class WebsiteTestUser(HttpUser):
         Picks a random sub-interval inside the collection's cached temporal extent
         and issues a GET or POST /search with the datetime parameter.
         """
-        collection_id = random.choice(self.collection_ids)
+        collection_id = self._random_collection_id()
+        if collection_id is None:
+            return
         datetime_interval = self.random_datetime_interval(collection_id)
 
         get_post = random.choice(["GET", "POST"])
         if get_post == "GET":
             items_response = self.client.get(
-                f"/search?collections={collection_id}&datetime={datetime_interval}",
+                f"/search?collections={collection_id}&datetime={datetime_interval}"
+                + f"&limit={SEARCH_LIMIT}",
                 name="get-search-datetime",
             )
         elif get_post == "POST":
@@ -430,6 +488,7 @@ class WebsiteTestUser(HttpUser):
                 json={
                     "collections": [collection_id],
                     "datetime": datetime_interval,
+                    "limit": SEARCH_LIMIT,
                 },
                 name="post-search-datetime",
             )
