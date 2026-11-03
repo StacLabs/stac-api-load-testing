@@ -49,6 +49,11 @@ Usage: stac-api-load-testing [OPTIONS]
 
 Options:
   -i, --ingest               Ingest sample data into the STAC API.
+  --collections INTEGER      Number of collections to create for --ingest.
+  --items-per-collection INTEGER
+                             Items per collection for --ingest; beyond the
+                             100 bundled items, duplicates are synthesized
+                             with new ids and shifted geometry.
   -l, --locust               Run Locust load tests against the STAC API.
   -t, --taurus               Run the Taurus wrapper for performance testing
                              against the STAC API.
@@ -74,6 +79,10 @@ Options:
 
 ## Ingest test data - http://localhost:8084 is just an example url
 ```$ stac-api-load-testing --ingest --api-address http://localhost:8084```
+
+Larger synthetic datasets: `--collections` creates `test-collection`, `test-collection-2`, ..., and `--items-per-collection` controls items per collection. Above the 100 bundled items, duplicates are derived from the sample features with new ids and randomly relocated geometry:
+
+```$ stac-api-load-testing --ingest --api-address http://localhost:8084 --collections 2 --items-per-collection 500```
 
 ## Run Locust Load Testing Ouside of Taurus Wrapper
 ```$ stac-api-load-testing --locust --api-address http://localhost:8084```  

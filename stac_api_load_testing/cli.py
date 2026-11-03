@@ -209,6 +209,18 @@ def run_benchmark(
     help="Specify the STAC API URL to test against. Accepts a comma-separated list for --benchmark.",
 )
 @click.option(
+    "--collections",
+    default=1,
+    help="Number of collections to create for --ingest (test-collection, test-collection-2, ...).",
+    type=int,
+)
+@click.option(
+    "--items-per-collection",
+    default=100,
+    help="Items to load per collection for --ingest; beyond the 100 bundled items, duplicates are synthesized with new ids and shifted geometry.",
+    type=int,
+)
+@click.option(
     "-b",
     "--benchmark",
     is_flag=True,
@@ -254,6 +266,8 @@ def main(
     concurrency: int,
     ramp_up: str,
     iterations: int,
+    collections: int,
+    items_per_collection: int,
     benchmark: bool,
     users: str,
     spawn_rate: int,
@@ -274,6 +288,9 @@ def main(
         concurrency (int): Specifies the number of concurrent users for Taurus testing. Default is 10.
         ramp_up (str): Specifies the ramp-up period for Taurus testing, in Taurus notation (e.g., '1m' for 1 minute). Default is '1m'.
         iterations (int): Specifies the number of iterations each virtual user will execute in Taurus testing. Default is 100.
+        collections (int): Number of collections to create for ingest. Default 1.
+        items_per_collection (int): Items per collection for ingest. Default 100;
+            above 100, duplicates are synthesized with new ids and shifted geometry.
         api_address (str): The base URL of the STAC API to be tested. Comma-separated list allowed for benchmark.
         benchmark (bool): If True, run headless locust runs sweeping --users levels and print a comparison table.
         users (str): Comma-separated concurrency levels for benchmark. Default '10,50,100'.
@@ -286,7 +303,11 @@ def main(
 
     if ingest:
         # Load data into the STAC API
-        data_loader.load_items(stac_api_base_url=api_address)
+        data_loader.load_items(
+            stac_api_base_url=api_address,
+            num_collections=collections,
+            items_per_collection=items_per_collection,
+        )
     elif locust:
         # Execute Locust load tests
         locust_file_path = _package_resource("config_files", "locustfile.py")
