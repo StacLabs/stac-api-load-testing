@@ -11,6 +11,7 @@ and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.
 ### Added
 
 - Added `-w/--workers` option for `--benchmark`: passes `--processes N` to locust, spawning N worker processes so a single-process CPU ceiling doesn't cap throughput
+- Datetime search task in the locust workload: picks a random sub-interval inside the collection's cached temporal extent and issues a GET or POST `/search` with the `datetime` parameter
 
 ### Changed
 
