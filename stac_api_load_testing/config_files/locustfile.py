@@ -85,8 +85,19 @@ class WebsiteTestUser(HttpUser):
     default_load_multiplier = 1
 
     def on_start(self):
-        """Initialize resources before any task is executed."""
-        pass
+        """Cache collection ids, item ids, and bboxes once per user."""
+        self.collection_ids = self.get_collection_ids()
+        self.item_ids = {}
+        self.bboxes = {}
+        for collection_id in self.collection_ids:
+            items_response = self.client.get(
+                f"/collections/{collection_id}/items?limit=500",
+                name="get-items-on-start",
+            )
+            self.item_ids[collection_id] = [
+                f["id"] for f in items_response.json()["features"]
+            ]
+            self.bboxes[collection_id] = self.get_collection_bbox(collection_id)
 
     def on_stop(self):
         """Clean up resources after tasks are completed."""
@@ -137,8 +148,8 @@ class WebsiteTestUser(HttpUser):
         items_body = items_response.json()
         item_ids = [feature["id"] for feature in items_body["features"]]
 
-        # Request between 1 and min(10, result count) Items, serially
-        for item_id in item_ids:
+        # Request up to 3 items from the search result, serially
+        for item_id in item_ids[:3]:
             self.client.get(
                 f"/collections/{collection_id}/items/{item_id}", name="get-item"
             )
@@ -213,13 +224,13 @@ class WebsiteTestUser(HttpUser):
         """
         Fetch a specific item by ID within a collection.
 
-        Selects an item ID at random from a predefined list and requests it.
+        Selects a random item from a random collection, using the ids
+        cached in on_start.
         """
-        random_number = random.randint(1, 11)
-        item = self.load_file("sentinel-s2-l2a-cogs_0_100.json")
-        random_id = item["features"][random_number]["id"]
+        collection_id = random.choice(self.collection_ids)
+        random_id = random.choice(self.item_ids[collection_id])
         self.client.get(
-            f"/collections/test-collection/items/{random_id}", name="get-item"
+            f"/collections/{collection_id}/items/{random_id}", name="get-item"
         )
 
     @tag("get_bbox")
@@ -282,8 +293,7 @@ class WebsiteTestUser(HttpUser):
         within a specific collection identified by its ID. The choice between GET or POST
         and the handling of the response showcases flexibility in API interaction.
         """
-        collection_ids = self.get_collection_ids()
-        collection_id = random.choice(collection_ids)
+        collection_id = random.choice(self.collection_ids)
 
         # Randomize GET / POST
         get_post = random.choice(["GET", "POST"])
@@ -311,9 +321,8 @@ class WebsiteTestUser(HttpUser):
         to find items that intersect with this point, also applying a randomized sort order.
         """
         # Get the bbox of a random collection
-        collection_ids = self.get_collection_ids()
-        collection_id = random.choice(collection_ids)
-        bbox = self.get_collection_bbox(collection_id)
+        collection_id = random.choice(self.collection_ids)
+        bbox = self.bboxes[collection_id]
 
         # Create random point inside bbox for /search intersects
         x = random.random() * (bbox[2] - bbox[0]) + bbox[0]
@@ -345,9 +354,8 @@ class WebsiteTestUser(HttpUser):
         applying a randomized sort order.
         """
         # Get the bbox of a random collection
-        collection_ids = self.get_collection_ids()
-        collection_id = random.choice(collection_ids)
-        bbox = self.get_collection_bbox(collection_id)
+        collection_id = random.choice(self.collection_ids)
+        bbox = self.bboxes[collection_id]
 
         # Create a random search bbox inside collection bbox
         x = [random.random() * (bbox[2] - bbox[0]) + bbox[0] for _ in range(2)]

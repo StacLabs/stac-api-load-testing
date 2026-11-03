@@ -14,6 +14,7 @@ and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.
 
 ### Changed
 
+- Rebalanced the locust workload: collection ids, item ids, and bboxes are cached per user in `on_start` instead of re-fetched every task; `get_item` picks a random item from a random collection (was 11 hot fixture ids in one collection); search fan-out is capped at 3 item fetches — get-item was ~88% of all requests
 - Raised pgstac `DB_MAX_CONN_SIZE` from 1 to 10 (`DB_MIN_CONN_SIZE` 2) so its connection pool is comparable to the other backends' default client pools
 
 ### Fixed
