@@ -3,9 +3,14 @@
 import json
 import os
 import random
+import time
+from datetime import datetime, timedelta
 from importlib import resources
 
+from gevent.lock import Semaphore
 from locust import HttpUser, run_single_user, tag, task
+
+SEARCH_LIMIT = 10
 
 test_item = {
     "stac_version": "1.0.0",
@@ -83,10 +88,63 @@ class WebsiteTestUser(HttpUser):
 
     host = os.getenv("LOCUST_HOST", "http://localhost:8083")
     default_load_multiplier = 1
+    _catalog_cache = None
+    _catalog_lock = Semaphore()
 
     def on_start(self):
-        """Initialize resources before any task is executed."""
-        pass
+        """Cache collection ids, item ids, bboxes, and temporal extents."""
+        with WebsiteTestUser._catalog_lock:
+            if WebsiteTestUser._catalog_cache is None:
+                WebsiteTestUser._catalog_cache = self._discover_catalog()
+        cache = WebsiteTestUser._catalog_cache
+        self.collection_ids = cache["ids"]
+        self.item_ids = cache["item_ids"]
+        self.bboxes = cache["bboxes"]
+        self.temporal_intervals = cache["temporal"]
+
+    def _discover_catalog(self):
+        """
+        Fetch collections, item ids, and extents once per locust worker process.
+
+        Retries briefly on failure and degrades to an empty catalog so a
+        struggling backend does not trigger a user respawn loop.
+        """
+        for attempt in range(3):
+            try:
+                collection_ids = self.get_collection_ids()
+                item_ids, bboxes, temporal = {}, {}, {}
+                for collection_id in collection_ids:
+                    items_response = self.client.get(
+                        f"/collections/{collection_id}/items?limit=500",
+                        name="get-items-on-start",
+                    )
+                    item_ids[collection_id] = [
+                        f["id"] for f in items_response.json()["features"]
+                    ]
+                    collection_response = self.client.get(
+                        f"/collections/{collection_id}", name="get-collection"
+                    )
+                    collection_body = collection_response.json()
+                    bboxes[collection_id] = collection_body["extent"]["spatial"][
+                        "bbox"
+                    ][0]
+                    temporal[collection_id] = collection_body["extent"]["temporal"][
+                        "interval"
+                    ][0]
+                return {
+                    "ids": collection_ids,
+                    "item_ids": item_ids,
+                    "bboxes": bboxes,
+                    "temporal": temporal,
+                }
+            except Exception:
+                if attempt < 2:
+                    time.sleep(1)
+        return {"ids": [], "item_ids": {}, "bboxes": {}, "temporal": {}}
+
+    def _random_collection_id(self):
+        """Pick a random cached collection id, or None if discovery failed."""
+        return random.choice(self.collection_ids) if self.collection_ids else None
 
     def on_stop(self):
         """Clean up resources after tasks are completed."""
@@ -137,26 +195,36 @@ class WebsiteTestUser(HttpUser):
         items_body = items_response.json()
         item_ids = [feature["id"] for feature in items_body["features"]]
 
-        # Request between 1 and min(10, result count) Items, serially
-        for item_id in item_ids:
+        # Request up to 3 items from the search result, serially
+        for item_id in item_ids[:3]:
             self.client.get(
                 f"/collections/{collection_id}/items/{item_id}", name="get-item"
             )
 
-    def get_collection_bbox(self, collection_id):
+    def random_datetime_interval(self, collection_id):
         """
-        Retrieve the bounding box (bbox) of a specified collection.
+        Generate a random datetime interval inside a collection's temporal extent.
 
         Args:
-            collection_id (str): The ID of the collection to fetch the bbox for.
+            collection_id (str): The ID of the collection whose extent bounds the range.
 
         Returns:
-            list: A list representing the bbox of the collection.
+            str: A STAC datetime interval in 'start/end' RFC3339 format. Open-ended
+            intervals ('../end', 'start/..') are returned if the extent is open.
         """
-        collection_response = self.client.get(
-            f"/collections/{collection_id}", name="get-collection"
+        start, end = self.temporal_intervals[collection_id]
+        if start is None or end is None:
+            return f"{start or '..'}/{end or '..'}"
+        t0 = datetime.fromisoformat(start.replace("Z", "+00:00"))
+        t1 = datetime.fromisoformat(end.replace("Z", "+00:00"))
+        span = (t1 - t0).total_seconds()
+        a, b = sorted(random.uniform(0, span) for _ in range(2))
+        d0 = t0 + timedelta(seconds=a)
+        d1 = t0 + timedelta(seconds=b)
+        return (
+            f"{d0.isoformat().replace('+00:00', 'Z')}"
+            f"/{d1.isoformat().replace('+00:00', 'Z')}"
         )
-        return collection_response.json()["extent"]["spatial"]["bbox"][0]
 
     def get_sortby(self, get_post):
         """
@@ -213,13 +281,18 @@ class WebsiteTestUser(HttpUser):
         """
         Fetch a specific item by ID within a collection.
 
-        Selects an item ID at random from a predefined list and requests it.
+        Selects a random item from a random collection, using the ids
+        cached in on_start.
         """
-        random_number = random.randint(1, 11)
-        item = self.load_file("sentinel-s2-l2a-cogs_0_100.json")
-        random_id = item["features"][random_number]["id"]
+        collection_id = self._random_collection_id()
+        if collection_id is None:
+            return
+        ids = self.item_ids.get(collection_id)
+        if not ids:
+            return
+        random_id = random.choice(ids)
         self.client.get(
-            f"/collections/test-collection/items/{random_id}", name="get-item"
+            f"/collections/{collection_id}/items/{random_id}", name="get-item"
         )
 
     @tag("get_bbox")
@@ -247,7 +320,10 @@ class WebsiteTestUser(HttpUser):
         """
         self.client.post(
             "/search",
-            json={"bbox": [16.171875, -79.095963, 179.992188, 19.824820]},
+            json={
+                "bbox": [16.171875, -79.095963, 179.992188, 19.824820],
+                "limit": SEARCH_LIMIT,
+            },
             name="post-search-bbox",
         )
 
@@ -268,6 +344,7 @@ class WebsiteTestUser(HttpUser):
             json={
                 "collections": ["test-collection"],
                 "intersects": {"type": "Point", "coordinates": [150.04, -33.14]},
+                "limit": SEARCH_LIMIT,
             },
             name="post-search-intersects",
         )
@@ -282,19 +359,21 @@ class WebsiteTestUser(HttpUser):
         within a specific collection identified by its ID. The choice between GET or POST
         and the handling of the response showcases flexibility in API interaction.
         """
-        collection_ids = self.get_collection_ids()
-        collection_id = random.choice(collection_ids)
+        collection_id = self._random_collection_id()
+        if collection_id is None:
+            return
 
         # Randomize GET / POST
         get_post = random.choice(["GET", "POST"])
         if get_post == "GET":
             items_response = self.client.get(
-                f"/search?collections={collection_id}", name="get-search-collection"
+                f"/search?collections={collection_id}&limit={SEARCH_LIMIT}",
+                name="get-search-collection",
             )
         elif get_post == "POST":
             items_response = self.client.post(
                 "/search",
-                json={"collections": [collection_id]},
+                json={"collections": [collection_id], "limit": SEARCH_LIMIT},
                 name="post-search-collection",
             )
 
@@ -311,9 +390,10 @@ class WebsiteTestUser(HttpUser):
         to find items that intersect with this point, also applying a randomized sort order.
         """
         # Get the bbox of a random collection
-        collection_ids = self.get_collection_ids()
-        collection_id = random.choice(collection_ids)
-        bbox = self.get_collection_bbox(collection_id)
+        collection_id = self._random_collection_id()
+        if collection_id is None:
+            return
+        bbox = self.bboxes[collection_id]
 
         # Create random point inside bbox for /search intersects
         x = random.random() * (bbox[2] - bbox[0]) + bbox[0]
@@ -327,6 +407,7 @@ class WebsiteTestUser(HttpUser):
                 "collections": [collection_id],
                 "intersects": {"type": "Point", "coordinates": [x, y]},
                 "sortby": sortby,
+                "limit": SEARCH_LIMIT,
             },
             name="post-multisearch-intersects",
         )
@@ -345,9 +426,10 @@ class WebsiteTestUser(HttpUser):
         applying a randomized sort order.
         """
         # Get the bbox of a random collection
-        collection_ids = self.get_collection_ids()
-        collection_id = random.choice(collection_ids)
-        bbox = self.get_collection_bbox(collection_id)
+        collection_id = self._random_collection_id()
+        if collection_id is None:
+            return
+        bbox = self.bboxes[collection_id]
 
         # Create a random search bbox inside collection bbox
         x = [random.random() * (bbox[2] - bbox[0]) + bbox[0] for _ in range(2)]
@@ -361,7 +443,7 @@ class WebsiteTestUser(HttpUser):
             search_bbox_str = ",".join([str(x) for x in search_bbox])
             items_response = self.client.get(
                 f"/search?collections={collection_id}&bbox={search_bbox_str}"
-                + f"&sortby={','.join(sortby)}",
+                + f"&sortby={','.join(sortby)}&limit={SEARCH_LIMIT}",
                 name="get-multisearch-bbox",
             )
         elif get_post == "POST":
@@ -371,8 +453,43 @@ class WebsiteTestUser(HttpUser):
                     "collections": [collection_id],
                     "bbox": search_bbox,
                     "sortby": sortby,
+                    "limit": SEARCH_LIMIT,
                 },
                 name="post-multisearch-bbox",
+            )
+
+        self.parse_request_items(collection_id, items_response)
+
+    @tag("datetime_search")
+    @task(default_load_multiplier)
+    def datetime_search(self):
+        """
+        Search for items within a random datetime range of a random collection.
+
+        Picks a random sub-interval inside the collection's cached temporal extent
+        and issues a GET or POST /search with the datetime parameter.
+        """
+        collection_id = self._random_collection_id()
+        if collection_id is None:
+            return
+        datetime_interval = self.random_datetime_interval(collection_id)
+
+        get_post = random.choice(["GET", "POST"])
+        if get_post == "GET":
+            items_response = self.client.get(
+                f"/search?collections={collection_id}&datetime={datetime_interval}"
+                + f"&limit={SEARCH_LIMIT}",
+                name="get-search-datetime",
+            )
+        elif get_post == "POST":
+            items_response = self.client.post(
+                "/search",
+                json={
+                    "collections": [collection_id],
+                    "datetime": datetime_interval,
+                    "limit": SEARCH_LIMIT,
+                },
+                name="post-search-datetime",
             )
 
         self.parse_request_items(collection_id, items_response)
