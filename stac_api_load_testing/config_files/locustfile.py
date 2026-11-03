@@ -3,6 +3,7 @@
 import json
 import os
 import random
+from datetime import datetime, timedelta
 from importlib import resources
 
 from locust import HttpUser, run_single_user, tag, task
@@ -85,10 +86,11 @@ class WebsiteTestUser(HttpUser):
     default_load_multiplier = 1
 
     def on_start(self):
-        """Cache collection ids, item ids, and bboxes once per user."""
+        """Cache collection ids, item ids, bboxes, and temporal extents per user."""
         self.collection_ids = self.get_collection_ids()
         self.item_ids = {}
         self.bboxes = {}
+        self.temporal_intervals = {}
         for collection_id in self.collection_ids:
             items_response = self.client.get(
                 f"/collections/{collection_id}/items?limit=500",
@@ -97,7 +99,16 @@ class WebsiteTestUser(HttpUser):
             self.item_ids[collection_id] = [
                 f["id"] for f in items_response.json()["features"]
             ]
-            self.bboxes[collection_id] = self.get_collection_bbox(collection_id)
+            collection_response = self.client.get(
+                f"/collections/{collection_id}", name="get-collection"
+            )
+            collection_body = collection_response.json()
+            self.bboxes[collection_id] = collection_body["extent"]["spatial"][
+                "bbox"
+            ][0]
+            self.temporal_intervals[collection_id] = collection_body["extent"][
+                "temporal"
+            ]["interval"][0]
 
     def on_stop(self):
         """Clean up resources after tasks are completed."""
@@ -154,20 +165,30 @@ class WebsiteTestUser(HttpUser):
                 f"/collections/{collection_id}/items/{item_id}", name="get-item"
             )
 
-    def get_collection_bbox(self, collection_id):
+    def random_datetime_interval(self, collection_id):
         """
-        Retrieve the bounding box (bbox) of a specified collection.
+        Generate a random datetime interval inside a collection's temporal extent.
 
         Args:
-            collection_id (str): The ID of the collection to fetch the bbox for.
+            collection_id (str): The ID of the collection whose extent bounds the range.
 
         Returns:
-            list: A list representing the bbox of the collection.
+            str: A STAC datetime interval in 'start/end' RFC3339 format. Open-ended
+            intervals ('../end', 'start/..') are returned if the extent is open.
         """
-        collection_response = self.client.get(
-            f"/collections/{collection_id}", name="get-collection"
+        start, end = self.temporal_intervals[collection_id]
+        if start is None or end is None:
+            return f"{start or '..'}/{end or '..'}"
+        t0 = datetime.fromisoformat(start.replace("Z", "+00:00"))
+        t1 = datetime.fromisoformat(end.replace("Z", "+00:00"))
+        span = (t1 - t0).total_seconds()
+        a, b = sorted(random.uniform(0, span) for _ in range(2))
+        d0 = t0 + timedelta(seconds=a)
+        d1 = t0 + timedelta(seconds=b)
+        return (
+            f"{d0.isoformat().replace('+00:00', 'Z')}"
+            f"/{d1.isoformat().replace('+00:00', 'Z')}"
         )
-        return collection_response.json()["extent"]["spatial"]["bbox"][0]
 
     def get_sortby(self, get_post):
         """
@@ -381,6 +402,36 @@ class WebsiteTestUser(HttpUser):
                     "sortby": sortby,
                 },
                 name="post-multisearch-bbox",
+            )
+
+        self.parse_request_items(collection_id, items_response)
+
+    @tag("datetime_search")
+    @task(default_load_multiplier)
+    def datetime_search(self):
+        """
+        Search for items within a random datetime range of a random collection.
+
+        Picks a random sub-interval inside the collection's cached temporal extent
+        and issues a GET or POST /search with the datetime parameter.
+        """
+        collection_id = random.choice(self.collection_ids)
+        datetime_interval = self.random_datetime_interval(collection_id)
+
+        get_post = random.choice(["GET", "POST"])
+        if get_post == "GET":
+            items_response = self.client.get(
+                f"/search?collections={collection_id}&datetime={datetime_interval}",
+                name="get-search-datetime",
+            )
+        elif get_post == "POST":
+            items_response = self.client.post(
+                "/search",
+                json={
+                    "collections": [collection_id],
+                    "datetime": datetime_interval,
+                },
+                name="post-search-datetime",
             )
 
         self.parse_request_items(collection_id, items_response)
