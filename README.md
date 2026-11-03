@@ -91,5 +91,39 @@ Compare multiple backends in one command (comma-separated addresses):
 
 ```$ stac-api-load-testing --benchmark --api-address http://localhost:8085,http://localhost:8087 --users 10,50,100 --run-time 1m -o results.csv```
 
+## Example benchmark: stac-fastapi-os vs stac-os-rs
+
+Methodology used for the comparison below:
+
+1. Start each backend with its own dedicated OpenSearch 3.8.0 instance (2GB heap each):
+
+   ```$ docker compose up -d opensearch opensearch-rs app-opensearch app-stac-os-rs```
+
+2. Ingest the same dataset into both backends — 1 collection (`test-collection`) with 100 Sentinel-2 L2A items:
+
+   ```$ stac-api-load-testing --ingest --api-address http://localhost:8085```   
+   ```$ stac-api-load-testing --ingest --api-address http://localhost:8087```
+
+3. Run the benchmark sweep against both in one command (10/50/100 users, spawn rate 10 users/s, 1 minute per run):
+
+   ```$ stac-api-load-testing --benchmark --api-address http://localhost:8085,http://localhost:8087 --users 10,50,100 --run-time 1m -o results.csv```
+
+Environment: AMD Ryzen 7 8845HS (16 threads), 28GB RAM, Docker 29.8.0, locust 2.47.0, stac-fastapi-os v8.1.1, stac-os-rs 0.2.0. The locustfile drives a read/search workload — landing page, collections, collection items, single items, and GET/POST `/search` with bbox, intersects, and sortby queries; write tasks are disabled.
+
+### Results
+
+| api | users | requests | failures | median (ms) | p95 (ms) | p99 (ms) | req/s |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| stac-fastapi-os (:8085) | 10 | 48,672 | 0 | 9 | 24 | 32 | 822 |
+| stac-fastapi-os (:8085) | 50 | 51,659 | 0 | 48 | 88 | 110 | 864 |
+| stac-fastapi-os (:8085) | 100 | 47,758 | 0 | 100 | 170 | 210 | 800 |
+| stac-os-rs (:8087) | 10 | 75,601 | 0 | 6 | 19 | 36 | 1,276 |
+| stac-os-rs (:8087) | 50 | 75,769 | 0 | 33 | 62 | 190 | 1,264 |
+| stac-os-rs (:8087) | 100 | 72,621 | 0 | 64 | 120 | 360 | 1,220 |
+
+### Summary
+
+stac-os-rs sustained ~45-55% higher throughput than stac-fastapi-os at every concurrency level (peaks of ~1,270 vs ~860 req/s) with lower median latency, and zero failures on either backend. stac-fastapi-os saturates near 50 users — median latency climbs 9→48→100ms while throughput stays flat — whereas stac-os-rs plateaus at a higher request rate. Caveat: locust reported >90% CPU on the load generator during all stac-os-rs runs, so its true ceiling is likely higher than measured; distributed locust workers would give a more precise figure. These numbers reflect a small (100-item) dataset on a single machine and should be treated as relative comparison, not absolute capacity.
+
 ## Debugging Locust tasks using a single simulated user
 ```$ python stac_api_load_testing/config_files/locustfile.py```
