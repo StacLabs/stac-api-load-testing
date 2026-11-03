@@ -234,7 +234,7 @@ def run_benchmark(
     help="Write aggregated --benchmark results to a CSV file.",
     type=click.Path(),
 )
-@click.version_option(version="0.3.0")
+@click.version_option(version="0.3.1")
 def main(
     ingest: bool,
     locust: bool,

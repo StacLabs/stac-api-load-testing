@@ -10,9 +10,16 @@ and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.
 
 ### Added
 
-- Added README section documenting an example stac-fastapi-os vs stac-os-rs benchmark: methodology, environment, results table, and summary
-
 ### Changed
+
+### Fixed
+
+
+## [v0.3.1]
+
+### Added
+
+- Added README section documenting an example stac-fastapi-os vs stac-os-rs benchmark: methodology, environment, results table, and summary
 
 ### Fixed
 
@@ -78,7 +85,8 @@ and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.
 - First release
 
 
-[Unreleased]: <https://github.com/Healy-Hyperspatial/stac-api-load-testing/compare/v0.3.0...main>
+[Unreleased]: <https://github.com/Healy-Hyperspatial/stac-api-load-testing/compare/v0.3.1...main>
+[v0.3.1]: <https://github.com/Healy-Hyperspatial/stac-api-load-testing/compare/v0.3.0...v0.3.1>
 [v0.3.0]: <https://github.com/Healy-Hyperspatial/stac-api-load-testing/compare/v0.2.0...v0.3.0>
 [v0.2.0]: <https://github.com/Healy-Hyperspatial/stac-api-load-testing/compare/v0.1.1...v0.2.0>
 [v0.1.1]: <https://github.com/Healy-Hyperspatial/stac-api-load-testing/compare/v0.1.0...v0.1.1>
