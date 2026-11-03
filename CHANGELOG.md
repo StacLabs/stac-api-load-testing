@@ -10,9 +10,13 @@ and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.
 
 ### Added
 
+- Added README section documenting an example stac-fastapi-os vs stac-os-rs benchmark: methodology, environment, results table, and summary
+
 ### Changed
 
 ### Fixed
+
+- Added missing `"type": "Collection"` to the sample collection fixture; required by STAC 1.0.0 and enforced by stac-fastapi v8 backends, so ingest was failing
 
 
 ## [v0.3.0]
