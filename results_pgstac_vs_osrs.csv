@@ -1,0 +1,7 @@
+api,users,requests,failures,median_ms,p95_ms,p99_ms,rps
+http://localhost:8083,10,23035,0,15,120,140,389.7
+http://localhost:8083,50,31233,0,37,350,1100,526.0
+http://localhost:8083,100,30613,0,52,560,3100,514.6
+http://localhost:8087,10,79168,0,5,19,34,1338.5
+http://localhost:8087,50,78950,0,32,60,190,1317.5
+http://localhost:8087,100,76297,0,61,120,350,1276.3

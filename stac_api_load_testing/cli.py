@@ -80,6 +80,7 @@ def run_benchmark(
     spawn_rate: int,
     run_time: str,
     output: str,
+    workers: int,
 ):
     """
     Run headless Locust benchmark sweeps against one or more STAC APIs.
@@ -94,6 +95,8 @@ def run_benchmark(
         spawn_rate (int): Users spawned per second in each run.
         run_time (str): Duration of each run, in locust notation (e.g. '30s').
         output (str): Optional path to write aggregated results as CSV.
+        workers (int): Locust worker processes (--processes); >1 runs
+            distributed on this machine to avoid a single-process CPU ceiling.
     """
     locustfile_path = _package_resource("config_files", "locustfile.py")
     results = []
@@ -104,27 +107,28 @@ def run_benchmark(
             with tempfile.TemporaryDirectory() as tmpdir:
                 csv_prefix = os.path.join(tmpdir, "locust")
                 stats_csv = f"{csv_prefix}_stats.csv"
+                cmd = [
+                    _tool_path("locust"),
+                    "--locustfile",
+                    locustfile_path,
+                    "--host",
+                    address,
+                    "--headless",
+                    "-u",
+                    str(users),
+                    "-r",
+                    str(spawn_rate),
+                    "-t",
+                    run_time,
+                    "--csv",
+                    csv_prefix,
+                    "--only-summary",
+                ]
+                if workers > 1:
+                    cmd += ["--processes", str(workers)]
                 # locust exits non-zero when requests fail; under load that is
                 # data (backend errors), not a benchmark tool error.
-                subprocess.run(
-                    [
-                        _tool_path("locust"),
-                        "--locustfile",
-                        locustfile_path,
-                        "--host",
-                        address,
-                        "--headless",
-                        "-u",
-                        str(users),
-                        "-r",
-                        str(spawn_rate),
-                        "-t",
-                        run_time,
-                        "--csv",
-                        csv_prefix,
-                        "--only-summary",
-                    ]
-                )
+                subprocess.run(cmd)
 
                 if not os.path.exists(stats_csv):
                     click.secho(
@@ -228,6 +232,13 @@ def run_benchmark(
     help="Duration of each --benchmark run, in locust notation (e.g. '30s', '1m').",
 )
 @click.option(
+    "-w",
+    "--workers",
+    default=1,
+    help="Locust worker processes for --benchmark (--processes); >1 distributes load across cores on this machine.",
+    type=int,
+)
+@click.option(
     "-o",
     "--output",
     default=None,
@@ -247,6 +258,7 @@ def main(
     users: str,
     spawn_rate: int,
     run_time: str,
+    workers: int,
     output: str,
 ):
     """
@@ -267,6 +279,7 @@ def main(
         users (str): Comma-separated concurrency levels for benchmark. Default '10,50,100'.
         spawn_rate (int): Users spawned per second in each benchmark run. Default 10.
         run_time (str): Duration of each benchmark run in locust notation. Default '30s'.
+        workers (int): Locust worker processes per benchmark run. Default 1.
         output (str): Optional CSV file path for aggregated benchmark results.
     """
     os.environ["LOCUST_HOST"] = api_address
@@ -301,7 +314,9 @@ def main(
     elif benchmark:
         concurrency_levels = [int(x) for x in users.split(",")]
         api_addresses = [a.strip() for a in api_address.split(",")]
-        run_benchmark(api_addresses, concurrency_levels, spawn_rate, run_time, output)
+        run_benchmark(
+            api_addresses, concurrency_levels, spawn_rate, run_time, output, workers
+        )
 
 
 if __name__ == "__main__":

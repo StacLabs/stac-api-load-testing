@@ -10,7 +10,11 @@ and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.
 
 ### Added
 
+- Added `-w/--workers` option for `--benchmark`: passes `--processes N` to locust, spawning N worker processes so a single-process CPU ceiling doesn't cap throughput
+
 ### Changed
+
+- Raised pgstac `DB_MAX_CONN_SIZE` from 1 to 10 (`DB_MIN_CONN_SIZE` 2) so its connection pool is comparable to the other backends' default client pools
 
 ### Fixed
 
