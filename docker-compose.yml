@@ -188,12 +188,13 @@ services:
 
   app-stac-os-rs:
     container_name: stac-os-rs
-    image: ghcr.io/jonhealy1/stac-os-rs:0.2.0
+    image: ghcr.io/jonhealy1/stac-os-rs:0.5.0
     restart: always
     environment:
       - OPENSEARCH_URL=http://opensearch-rs:9200
       - ENABLE_TRANSACTIONS_EXTENSIONS=true
       - ENABLE_COLLECTIONS_SEARCH_ROUTE=true
+      - DATABASE_REFRESH=true
     ports:
       - "8087:3000"
     depends_on:
