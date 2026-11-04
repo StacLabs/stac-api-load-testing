@@ -7,8 +7,10 @@ import time
 from datetime import datetime, timedelta
 from importlib import resources
 
+import requests
 from gevent.lock import Semaphore
-from locust import HttpUser, run_single_user, tag, task
+from locust import HttpUser, events, run_single_user, tag, task
+from locust.runners import MasterRunner
 
 SEARCH_LIMIT = 10
 
@@ -74,6 +76,46 @@ test_item = {
 }
 
 
+def _discover_catalog(host):
+    """
+    Fetch collections, item ids, and extents once per locust worker process.
+
+    Uses plain requests so discovery traffic is never counted in locust
+    stats. Retries briefly on failure and degrades to an empty catalog so
+    a struggling backend does not trigger a user respawn loop.
+    """
+    for attempt in range(3):
+        try:
+            collections_body = requests.get(f"{host}/collections", timeout=30).json()
+            collection_ids = [
+                collection["id"] for collection in collections_body["collections"]
+            ]
+            item_ids, bboxes, temporal = {}, {}, {}
+            for collection_id in collection_ids:
+                items_body = requests.get(
+                    f"{host}/collections/{collection_id}/items?limit=500",
+                    timeout=60,
+                ).json()
+                item_ids[collection_id] = [f["id"] for f in items_body["features"]]
+                collection_body = requests.get(
+                    f"{host}/collections/{collection_id}", timeout=30
+                ).json()
+                bboxes[collection_id] = collection_body["extent"]["spatial"]["bbox"][0]
+                temporal[collection_id] = collection_body["extent"]["temporal"][
+                    "interval"
+                ][0]
+            return {
+                "ids": collection_ids,
+                "item_ids": item_ids,
+                "bboxes": bboxes,
+                "temporal": temporal,
+            }
+        except Exception:
+            if attempt < 2:
+                time.sleep(1)
+    return {"ids": [], "item_ids": {}, "bboxes": {}, "temporal": {}}
+
+
 class WebsiteTestUser(HttpUser):
     """
     Simulates a user performing various API requests to test a web application's performance and behavior.
@@ -92,55 +134,15 @@ class WebsiteTestUser(HttpUser):
     _catalog_lock = Semaphore()
 
     def on_start(self):
-        """Cache collection ids, item ids, bboxes, and temporal extents."""
+        """Attach the worker's cached catalog, discovering it lazily if needed."""
         with WebsiteTestUser._catalog_lock:
             if WebsiteTestUser._catalog_cache is None:
-                WebsiteTestUser._catalog_cache = self._discover_catalog()
+                WebsiteTestUser._catalog_cache = _discover_catalog(self.host)
         cache = WebsiteTestUser._catalog_cache
         self.collection_ids = cache["ids"]
         self.item_ids = cache["item_ids"]
         self.bboxes = cache["bboxes"]
         self.temporal_intervals = cache["temporal"]
-
-    def _discover_catalog(self):
-        """
-        Fetch collections, item ids, and extents once per locust worker process.
-
-        Retries briefly on failure and degrades to an empty catalog so a
-        struggling backend does not trigger a user respawn loop.
-        """
-        for attempt in range(3):
-            try:
-                collection_ids = self.get_collection_ids()
-                item_ids, bboxes, temporal = {}, {}, {}
-                for collection_id in collection_ids:
-                    items_response = self.client.get(
-                        f"/collections/{collection_id}/items?limit=500",
-                        name="get-items-on-start",
-                    )
-                    item_ids[collection_id] = [
-                        f["id"] for f in items_response.json()["features"]
-                    ]
-                    collection_response = self.client.get(
-                        f"/collections/{collection_id}", name="get-collection"
-                    )
-                    collection_body = collection_response.json()
-                    bboxes[collection_id] = collection_body["extent"]["spatial"][
-                        "bbox"
-                    ][0]
-                    temporal[collection_id] = collection_body["extent"]["temporal"][
-                        "interval"
-                    ][0]
-                return {
-                    "ids": collection_ids,
-                    "item_ids": item_ids,
-                    "bboxes": bboxes,
-                    "temporal": temporal,
-                }
-            except Exception:
-                if attempt < 2:
-                    time.sleep(1)
-        return {"ids": [], "item_ids": {}, "bboxes": {}, "temporal": {}}
 
     def _random_collection_id(self):
         """Pick a random cached collection id, or None if discovery failed."""
@@ -511,6 +513,19 @@ class WebsiteTestUser(HttpUser):
         self.client.post(
             "/collections/test-collection/items", json=item, name="post-create-item"
         )
+
+
+@events.test_start.add_listener
+def on_test_start(environment, **kwargs):
+    """Populate the per-process catalog cache before users spawn.
+
+    Runs on each worker process (skipped on the master, which hosts no
+    users), so discovery completes before measured traffic begins.
+    """
+    if isinstance(environment.runner, MasterRunner):
+        return
+    if environment.host and WebsiteTestUser._catalog_cache is None:
+        WebsiteTestUser._catalog_cache = _discover_catalog(environment.host)
 
 
 # Run tests in debugger if launched directly,

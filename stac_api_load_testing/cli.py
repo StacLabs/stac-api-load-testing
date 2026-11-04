@@ -11,6 +11,7 @@ from importlib import resources
 from pathlib import Path
 
 import click
+import requests
 import yaml
 
 from .data_loader import data_loader
@@ -74,6 +75,72 @@ def _read_aggregated_stats(csv_path: str) -> dict:
     return {}
 
 
+def _collection_ids(base_url: str) -> list:
+    """Return all collection ids served by a STAC API."""
+    response = requests.get(f"{base_url}/collections", timeout=30)
+    response.raise_for_status()
+    return [c["id"] for c in response.json().get("collections", [])]
+
+
+def _collection_item_count(base_url: str, collection_id: str) -> int:
+    """Count items in one collection, preferring the cheap numberMatched field."""
+    response = requests.post(
+        f"{base_url}/search",
+        json={"collections": [collection_id], "limit": 1},
+        timeout=30,
+    )
+    response.raise_for_status()
+    matched = response.json().get("numberMatched")
+    if matched is not None:
+        return matched
+
+    # APIs without the context extension: count by paging the items endpoint.
+    count = 0
+    url = f"{base_url}/collections/{collection_id}/items?limit=500"
+    for _ in range(100):
+        response = requests.get(url, timeout=60)
+        response.raise_for_status()
+        page = response.json()
+        count += len(page.get("features", []))
+        url = next(
+            (
+                link["href"]
+                for link in page.get("links", [])
+                if link.get("rel") == "next" and link.get("href")
+            ),
+            None,
+        )
+        if url is None:
+            return count
+    return count
+
+
+def _api_metadata(base_url: str) -> dict:
+    """Fetch the catalog title and dataset size from a STAC API.
+
+    Returns a dict with 'name', 'collections' and 'items' keys; fields are
+    empty when the API is unreachable or doesn't report them.
+    """
+    meta: dict[str, object] = {"name": "", "collections": "", "items": ""}
+    try:
+        response = requests.get(base_url, timeout=30)
+        response.raise_for_status()
+        meta["name"] = response.json().get("title", "")
+    except requests.RequestException as exc:
+        click.secho(f"could not fetch catalog info from {base_url}: {exc}", fg="yellow")
+
+    try:
+        collection_ids = _collection_ids(base_url)
+        meta["collections"] = len(collection_ids)
+        meta["items"] = sum(
+            _collection_item_count(base_url, collection_id)
+            for collection_id in collection_ids
+        )
+    except requests.RequestException as exc:
+        click.secho(f"could not count items in {base_url}: {exc}", fg="yellow")
+    return meta
+
+
 def run_benchmark(
     api_addresses: list,
     concurrency_levels: list,
@@ -101,7 +168,19 @@ def run_benchmark(
     locustfile_path = _package_resource("config_files", "locustfile.py")
     results = []
 
-    for address in api_addresses:
+    for target in api_addresses:
+        # Targets can be labelled: "name=http://..." overrides the catalog title.
+        name, _, address = target.partition("=")
+        if not address:
+            name, address = "", target
+
+        meta = _api_metadata(address)
+        api_name = name or meta["name"] or address
+        click.secho(
+            f"\n=== {api_name} ({address}) — "
+            f"{meta['collections']} collections, {meta['items']} items ===",
+            fg="cyan",
+        )
         for users in concurrency_levels:
             click.secho(f"\n>>> {address} @ {users} users for {run_time}", fg="cyan")
             with tempfile.TemporaryDirectory() as tmpdir:
@@ -141,7 +220,10 @@ def run_benchmark(
                 if stats:
                     results.append(
                         {
-                            "api": address,
+                            "api": api_name,
+                            "url": address,
+                            "collections": meta["collections"],
+                            "items": meta["items"],
                             "users": users,
                             "requests": stats.get("Request Count"),
                             "failures": stats.get("Failure Count"),
@@ -156,12 +238,16 @@ def run_benchmark(
         click.secho("No benchmark results collected.", fg="red")
         return
 
-    header = f"{'api':<26}{'users':>7}{'reqs':>9}{'fails':>7}{'med':>8}{'p95':>8}{'p99':>8}{'rps':>9}"
+    header = (
+        f"{'api':<36}{'colls':>6}{'items':>7}{'users':>7}{'reqs':>9}"
+        f"{'fails':>7}{'med':>8}{'p95':>8}{'p99':>8}{'rps':>9}"
+    )
     click.echo("\n" + header)
     click.echo("-" * len(header))
     for row in results:
         click.echo(
-            f"{row['api']:<26}{row['users']:>7}{row['requests']:>9}"
+            f"{row['api']:<36}{row['collections']:>6}{row['items']:>7}"
+            f"{row['users']:>7}{row['requests']:>9}"
             f"{row['failures']:>7}{row['median_ms']:>8}{row['p95_ms']:>8}"
             f"{row['p99_ms']:>8}{row['rps']:>9}"
         )
@@ -206,7 +292,7 @@ def run_benchmark(
     "-a",
     "--api-address",
     default="http://localhost:8080",
-    help="Specify the STAC API URL to test against. Accepts a comma-separated list for --benchmark.",
+    help="Specify the STAC API URL to test against. Accepts a comma-separated list for --benchmark; prefix with 'name=' to label a target in results.",
 )
 @click.option(
     "--collections",
