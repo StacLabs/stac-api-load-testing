@@ -110,35 +110,40 @@ Methodology used for the comparison below:
 
    ```$ docker compose up -d opensearch opensearch-rs app-opensearch app-stac-os-rs pgstac app-pgstac```
 
-2. Ingest the same dataset into each backend — 1 collection (`test-collection`) with 100 Sentinel-2 L2A items:
+2. Ingest the same dataset into each backend — 4 collections with 500 Sentinel-2 L2A items each (2,000 items total):
 
-   ```$ stac-api-load-testing --ingest --api-address http://localhost:8083```   
-   ```$ stac-api-load-testing --ingest --api-address http://localhost:8085```   
-   ```$ stac-api-load-testing --ingest --api-address http://localhost:8087```
+   ```$ stac-api-load-testing --ingest --api-address http://localhost:8083 --collections 4 --items-per-collection 500```   
+   ```$ stac-api-load-testing --ingest --api-address http://localhost:8085 --collections 4 --items-per-collection 500```   
+   ```$ stac-api-load-testing --ingest --api-address http://localhost:8087 --collections 4 --items-per-collection 500```
 
-3. Run the benchmark sweep against all three in one command (10/50/100 users, spawn rate 10 users/s, 1 minute per run, 8 locust worker processes):
+3. Run the benchmark sweep against all three in one command (10/50/100/150 users, spawn rate 10 users/s, 1 minute per run, 8 locust worker processes):
 
-   ```$ stac-api-load-testing --benchmark --api-address http://localhost:8083,http://localhost:8085,http://localhost:8087 --users 10,50,100 --run-time 1m -w 8 -o results.csv```
+   ```$ stac-api-load-testing --benchmark --api-address stac-fastapi-pgstac=http://localhost:8083,stac-fastapi-os=http://localhost:8085,stac-os-rs=http://localhost:8087 --users 10,50,100,150 --run-time 1m -w 8 -o results.csv```
 
-Environment: AMD Ryzen 7 8845HS (16 threads), 28GB RAM, Docker 29.8.0, locust 2.47.0 (`-w 8`), stac-fastapi.pgstac 7.2.0, stac-fastapi-os v8.1.1, stac-os-rs 0.2.0. The locustfile drives a read/search workload — landing page, collections, collection items, single items, and GET/POST `/search` with bbox, intersects, and sortby queries; write tasks are disabled.
+Environment: AMD Ryzen 7 8845HS (16 threads), 28GB RAM, Docker 29.8.0, locust 2.47.0 (`-w 8`), stac-fastapi.pgstac 7.2.0, stac-fastapi-os v8.1.1, stac-os-rs 0.5.0. The locustfile drives a read/search workload — landing page, collections, collection items, single items across all collections, GET/POST `/search` with bbox, intersects, sortby, datetime, CQL2, and ids queries, one level of `next`-link pagination, and filtered item lists; every search uses `limit=10`; write tasks are disabled.
+
+Note on parity: stac-fastapi-os and stac-os-rs compute `numberMatched` (total-hit counting) on every search, while this stac-fastapi-pgstac version ships no context extension and skips count work entirely — so pgstac's reported numbers do not include a cost the OpenSearch-backed APIs pay per query.
 
 ### Results
 
-| api | users | requests | failures | median (ms) | p95 (ms) | p99 (ms) | req/s |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| stac-fastapi-pgstac (:8083) | 10 | 23,844 | 0 | 14 | 120 | 150 | 397 |
-| stac-fastapi-pgstac (:8083) | 50 | 30,273 | 0 | 20 | 360 | 1,900 | 504 |
-| stac-fastapi-pgstac (:8083) | 100 | 30,094 | 0 | 37 | 570 | 3,400 | 501 |
-| stac-fastapi-os (:8085) | 10 | 71,109 | 0 | 6 | 18 | 25 | 1,184 |
-| stac-fastapi-os (:8085) | 50 | 88,225 | 0 | 29 | 62 | 98 | 1,469 |
-| stac-fastapi-os (:8085) | 100 | 85,916 | 0 | 60 | 120 | 160 | 1,429 |
-| stac-os-rs (:8087) | 10 | 153,131 | 0 | 3 | 6 | 31 | 2,551 |
-| stac-os-rs (:8087) | 50 | 196,175 | 0 | 11 | 36 | 70 | 3,267 |
-| stac-os-rs (:8087) | 100 | 203,499 | 0 | 22 | 62 | 100 | 3,387 |
+| api | collections | items | users | requests | failures | median (ms) | p95 (ms) | p99 (ms) | req/s |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| stac-fastapi-pgstac (:8083) | 4 | 2,000 | 10 | 11,252 | 0 | 27 | 140 | 170 | 187 |
+| stac-fastapi-pgstac (:8083) | 4 | 2,000 | 50 | 13,817 | 0 | 54 | 780 | 2,500 | 230 |
+| stac-fastapi-pgstac (:8083) | 4 | 2,000 | 100 | 13,629 | 0 | 120 | 1,300 | 5,900 | 227 |
+| stac-fastapi-pgstac (:8083) | 4 | 2,000 | 150 | 13,619 | 0 | 250 | 1,600 | 7,300 | 227 |
+| stac-fastapi-os (:8085) | 4 | 2,000 | 10 | 49,492 | 0 | 9 | 25 | 32 | 824 |
+| stac-fastapi-os (:8085) | 4 | 2,000 | 50 | 59,998 | 0 | 43 | 98 | 140 | 999 |
+| stac-fastapi-os (:8085) | 4 | 2,000 | 100 | 58,755 | 0 | 90 | 170 | 220 | 978 |
+| stac-fastapi-os (:8085) | 4 | 2,000 | 150 | 51,455 | 0 | 150 | 270 | 330 | 857 |
+| stac-os-rs (:8087) | 4 | 2,000 | 10 | 100,517 | 0 | 5 | 10 | 12 | 1,674 |
+| stac-os-rs (:8087) | 4 | 2,000 | 50 | 131,865 | 0 | 20 | 38 | 47 | 2,196 |
+| stac-os-rs (:8087) | 4 | 2,000 | 100 | 130,389 | 0 | 40 | 68 | 82 | 2,170 |
+| stac-os-rs (:8087) | 4 | 2,000 | 150 | 105,080 | 0 | 72 | 120 | 150 | 1,748 |
 
 ### Summary
 
-stac-os-rs sustained ~2.3x the throughput of stac-fastapi-os and ~6.7x stac-fastapi-pgstac, peaking at ~3,400 req/s with zero failures across all nine runs. Running enough locust workers matters: in single-process runs the same setup measured only ~1,300 req/s for stac-os-rs and ~860 req/s for stac-fastapi-os because the load generator itself was CPU-bound — with `-w 8` no CPU warnings appeared and reported numbers reflect the backends. stac-fastapi-pgstac is genuinely backend-limited (~500 req/s regardless of generator capacity) and shows severe tail latency at 100 users (p99 3.4s), while the OpenSearch-backed APIs stay under ~160ms p99. These numbers reflect a small (100-item) dataset on a single machine and should be treated as a relative comparison, not absolute capacity.
+stac-os-rs sustained ~2.2x the throughput of stac-fastapi-os and ~8.8x stac-fastapi-pgstac, peaking at ~2,200 req/s with zero failures across all twelve runs. All three backends saturate by ~100 users on this box — throughput knees at ~250 (pgstac), ~1,000 (fastapi-os), and ~2,200 (stac-os-rs) req/s; at 150 users each shows the classic overload curve with declining throughput and rising latency. The OpenSearch-backed APIs degrade without errors, as does pgstac — its earlier failures (CQL2 500s, dropped connections) traced to Docker's 64MB `/dev/shm` default starving Postgres parallel-query workers, fixed by `shm_size: 1gb` on the pgstac container; with that resolved its ~230 req/s ceiling is clean but its p99 still reaches 7.3s at 150 users. Running enough locust workers matters: in single-process runs the same setup measured only ~1,000 req/s because the load generator itself was CPU-bound — with `-w 8` no CPU warnings appeared and reported numbers reflect the backends. These numbers reflect a 2,000-item dataset on a single machine and should be treated as a relative comparison, not absolute capacity.
 
 ## Debugging Locust tasks using a single simulated user
 ```$ python stac_api_load_testing/config_files/locustfile.py```

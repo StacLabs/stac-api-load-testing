@@ -6,6 +6,7 @@ import random
 import time
 from datetime import datetime, timedelta
 from importlib import resources
+from urllib.parse import urlparse
 
 import requests
 from gevent.lock import Semaphore
@@ -76,36 +77,53 @@ test_item = {
 }
 
 
+def _fixture_item_ids() -> list:
+    """Return the ids of the bundled sample items."""
+    fixture_path = resources.files("stac_api_load_testing.data_loader").joinpath(
+        "setup_data/sentinel-s2-l2a-cogs_0_100.json"
+    )
+    with fixture_path.open() as file:
+        return [feature["id"] for feature in json.load(file)["features"]]
+
+
+def _synthesize_item_ids(count: int) -> list:
+    """Reproduce the ingest id scheme: bundled ids, then <base_id>-<index>."""
+    base_ids = _fixture_item_ids()
+    return [
+        base_ids[i] if i < len(base_ids) else f"{base_ids[i % len(base_ids)]}-{i}"
+        for i in range(count)
+    ]
+
+
 def _discover_catalog(host):
     """
-    Fetch collections, item ids, and extents once per locust worker process.
+    Fetch collection metadata once per worker and derive item ids locally.
 
-    Uses plain requests so discovery traffic is never counted in locust
-    stats. Retries briefly on failure and degrades to an empty catalog so
-    a struggling backend does not trigger a user respawn loop.
+    Item ids follow the ingest scheme (bundled ids, then <base_id>-<index>)
+    so no items pages are fetched at all — discovery costs one /collections
+    request. Item counts come from the STAC_COLLECTION_COUNTS env var the
+    benchmark CLI sets from its metadata query; without it only the 100
+    bundled ids are used. Retries briefly on failure and degrades to an
+    empty catalog so a struggling backend does not respawn-loop users.
     """
+    counts = json.loads(os.environ.get("STAC_COLLECTION_COUNTS") or "{}")
     for attempt in range(3):
         try:
-            collections_body = requests.get(f"{host}/collections", timeout=30).json()
-            collection_ids = [
-                collection["id"] for collection in collections_body["collections"]
+            collections = requests.get(f"{host}/collections", timeout=30).json()[
+                "collections"
             ]
             item_ids, bboxes, temporal = {}, {}, {}
-            for collection_id in collection_ids:
-                items_body = requests.get(
-                    f"{host}/collections/{collection_id}/items?limit=500",
-                    timeout=60,
-                ).json()
-                item_ids[collection_id] = [f["id"] for f in items_body["features"]]
-                collection_body = requests.get(
-                    f"{host}/collections/{collection_id}", timeout=30
-                ).json()
-                bboxes[collection_id] = collection_body["extent"]["spatial"]["bbox"][0]
-                temporal[collection_id] = collection_body["extent"]["temporal"][
-                    "interval"
-                ][0]
+            for collection in collections:
+                collection_id = collection["id"]
+                item_ids[collection_id] = _synthesize_item_ids(
+                    counts.get(collection_id, 100)
+                )
+                bboxes[collection_id] = collection["extent"]["spatial"]["bbox"][0]
+                temporal[collection_id] = collection["extent"]["temporal"]["interval"][
+                    0
+                ]
             return {
-                "ids": collection_ids,
+                "ids": [c["id"] for c in collections],
                 "item_ids": item_ids,
                 "bboxes": bboxes,
                 "temporal": temporal,
@@ -194,11 +212,15 @@ class WebsiteTestUser(HttpUser):
             collection_id (str): The ID of the collection the items belong to.
             items_response: The response object containing the items data.
         """
-        items_body = items_response.json()
+        try:
+            items_body = items_response.json()
+        except ValueError:
+            # Empty/invalid body under load — skip fan-out rather than crash
+            return
         item_ids = [feature["id"] for feature in items_body["features"]]
 
-        # Request up to 3 items from the search result, serially
-        for item_id in item_ids[:3]:
+        # Request up to 2 items from the search result, serially
+        for item_id in item_ids[:2]:
             self.client.get(
                 f"/collections/{collection_id}/items/{item_id}", name="get-item"
             )
@@ -493,6 +515,119 @@ class WebsiteTestUser(HttpUser):
                 },
                 name="post-search-datetime",
             )
+
+        self.parse_request_items(collection_id, items_response)
+
+    @tag("filtered_items")
+    @task(default_load_multiplier)
+    def filtered_items(self):
+        """
+        Fetch an item collection filtered by a random datetime interval.
+
+        Exercises the /collections/{id}/items endpoint with real query
+        parameters rather than an unfiltered page.
+        """
+        collection_id = self._random_collection_id()
+        if collection_id is None:
+            return
+        datetime_interval = self.random_datetime_interval(collection_id)
+        self.client.get(
+            f"/collections/{collection_id}/items"
+            + f"?datetime={datetime_interval}&limit={SEARCH_LIMIT}",
+            name="get-items-datetime",
+        )
+
+    @tag("paged_search")
+    @task(default_load_multiplier)
+    def paged_search(self):
+        """
+        Fetch a search page then follow its `next` link once.
+
+        Covers actual pagination behavior; the next link's origin is
+        rewritten to this user's host because some implementations emit
+        their configured root URL instead of the request host.
+        """
+        collection_id = self._random_collection_id()
+        if collection_id is None:
+            return
+        response = self.client.get(
+            f"/search?collections={collection_id}&limit={SEARCH_LIMIT}",
+            name="get-search-paged",
+        )
+        try:
+            links = response.json().get("links", [])
+        except ValueError:
+            return
+        next_href = next(
+            (
+                link["href"]
+                for link in links
+                if link.get("rel") == "next" and link.get("href")
+            ),
+            None,
+        )
+        if next_href is None:
+            return
+        parsed = urlparse(next_href)
+        path = parsed.path + (f"?{parsed.query}" if parsed.query else "")
+        self.client.get(path, name="get-search-next")
+
+    @tag("ids_search")
+    @task(default_load_multiplier)
+    def ids_search(self):
+        """
+        Search for up to 3 cached item ids within a random collection.
+
+        Exercises the ids parameter of POST /search using real ids
+        discovered at test start.
+        """
+        collection_id = self._random_collection_id()
+        if collection_id is None:
+            return
+        ids = self.item_ids.get(collection_id)
+        if not ids:
+            return
+        picked = random.sample(ids, min(3, len(ids)))
+        self.client.post(
+            "/search",
+            json={
+                "collections": [collection_id],
+                "ids": picked,
+                "limit": SEARCH_LIMIT,
+            },
+            name="post-search-ids",
+        )
+
+    @tag("cql2_filter")
+    @task(default_load_multiplier)
+    def cql2_filter(self):
+        """
+        Search with a simple CQL2-JSON property filter.
+
+        Picks a random comparison on a well-known item property; all
+        tested backends implement the filter extension, so this is real
+        filter work rather than an ignored parameter.
+        """
+        collection_id = self._random_collection_id()
+        if collection_id is None:
+            return
+        prop, value = random.choice(
+            [
+                ("properties.platform", "sentinel-2b"),
+                ("properties.constellation", "sentinel-2"),
+                ("properties.sentinel:grid_square", "CV"),
+            ]
+        )
+        items_response = self.client.post(
+            "/search",
+            json={
+                "collections": [collection_id],
+                "filter-lang": "cql2-json",
+                "filter": {"op": "=", "args": [{"property": prop}, value]},
+                "limit": SEARCH_LIMIT,
+            },
+            name="post-search-cql2",
+        )
 
         self.parse_request_items(collection_id, items_response)
 

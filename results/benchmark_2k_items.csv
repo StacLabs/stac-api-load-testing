@@ -1,0 +1,13 @@
+api,url,collections,items,users,requests,failures,median_ms,p95_ms,p99_ms,rps
+stac-fastapi-pgstac,http://localhost:8083,4,2000,10,11252,0,27,140,170,187.4
+stac-fastapi-pgstac,http://localhost:8083,4,2000,50,13817,0,54,780,2500,229.9
+stac-fastapi-pgstac,http://localhost:8083,4,2000,100,13629,0,120,1300,5900,226.8
+stac-fastapi-os,http://localhost:8085,4,2000,10,49492,0,9,25,32,824.3
+stac-fastapi-os,http://localhost:8085,4,2000,50,59998,0,43,98,140,998.9
+stac-fastapi-os,http://localhost:8085,4,2000,100,58755,0,90,170,220,978.1
+stac-os-rs,http://localhost:8087,4,2000,10,100517,0,5,10,12,1674.4
+stac-os-rs,http://localhost:8087,4,2000,50,131865,0,20,38,47,2196.2
+stac-os-rs,http://localhost:8087,4,2000,100,130389,0,40,68,82,2170.4
+stac-fastapi-pgstac,http://localhost:8083,4,2000,150,13619,0,250,1600,7300,226.7
+stac-fastapi-os,http://localhost:8085,4,2000,150,51455,0,150,270,330,856.5
+stac-os-rs,http://localhost:8087,4,2000,150,105080,0,72,120,150,1748.1

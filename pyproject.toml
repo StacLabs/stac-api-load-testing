@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "stac-api-load-testing"
-version = "0.3.1"
+version = "0.4.0"
 description = "Load testing for stac compliant apis"
 readme = "README.md"
 requires-python = ">=3.11"

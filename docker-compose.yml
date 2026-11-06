@@ -40,6 +40,7 @@ services:
   pgstac:
     container_name: pgstac
     image: ghcr.io/stac-utils/pgstac:v0.10.0
+    shm_size: 1gb
     environment:
       - POSTGRES_USER=username
       - POSTGRES_PASSWORD=password
@@ -49,7 +50,7 @@ services:
       - PGDATABASE=postgis
     ports:
       - "5439:5432"
-    command: postgres -N 500 -c shared_buffers=2GB -c effective_cache_size=4GB
+    command: postgres -N 500 -c shared_buffers=2GB -c effective_cache_size=4GB -c work_mem=64MB
     healthcheck:
       test: ["CMD-SHELL", "pg_isready", "-d", "postgis", "-U", "username"]
       interval: 10s

@@ -1,6 +1,7 @@
 """stac-api-load-testing cli tool."""
 
 import csv
+import json
 import os
 import re
 import shutil
@@ -132,10 +133,12 @@ def _api_metadata(base_url: str) -> dict:
     try:
         collection_ids = _collection_ids(base_url)
         meta["collections"] = len(collection_ids)
-        meta["items"] = sum(
-            _collection_item_count(base_url, collection_id)
+        counts = {
+            collection_id: _collection_item_count(base_url, collection_id)
             for collection_id in collection_ids
-        )
+        }
+        meta["items"] = sum(counts.values())
+        meta["collection_counts"] = counts
     except requests.RequestException as exc:
         click.secho(f"could not count items in {base_url}: {exc}", fg="yellow")
     return meta
@@ -176,6 +179,10 @@ def run_benchmark(
 
         meta = _api_metadata(address)
         api_name = name or meta["name"] or address
+        # Locust workers derive item ids locally and need only the count.
+        os.environ["STAC_COLLECTION_COUNTS"] = json.dumps(
+            meta.get("collection_counts") or {}
+        )
         click.secho(
             f"\n=== {api_name} ({address}) — "
             f"{meta['collections']} collections, {meta['items']} items ===",
@@ -343,7 +350,7 @@ def run_benchmark(
     help="Write aggregated --benchmark results to a CSV file.",
     type=click.Path(),
 )
-@click.version_option(version="0.3.1")
+@click.version_option(version="0.4.0")
 def main(
     ingest: bool,
     locust: bool,

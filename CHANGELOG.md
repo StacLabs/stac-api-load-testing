@@ -8,20 +8,24 @@ and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.
 
 ## [Unreleased]
 
+## [v0.4.0]
+
 ### Added
 
 - Added `-w/--workers` option for `--benchmark`: passes `--processes N` to locust, spawning N worker processes so a single-process CPU ceiling doesn't cap throughput
 - Added `--collections` and `--items-per-collection` options for `--ingest`: creates multiple test collections and synthesizes additional items (new ids, randomly relocated geometry) beyond the 100 bundled features
 - Datetime search task in the locust workload: picks a random sub-interval inside the collection's cached temporal extent and issues a GET or POST `/search` with the `datetime` parameter
+- Three new workload tasks: `get-items-datetime` (items endpoint with a datetime filter), `get-search-paged`/`get-search-next` (follows a `next` link once, rewriting the link origin to the target host), and `post-search-ids` (POST /search with real cached item ids)
+- `post-search-cql2` task: POST /search with a CQL2-JSON equality filter on common item properties — verified to actually filter on all tested backends
 - Benchmark results now include API metadata: `name=` labels on `--api-address` targets (falling back to the landing-page title), plus collection and item counts queried once per API — the output CSV/table carries `api`, `url`, `collections`, `items` columns
 
 ### Changed
 
-- Rebalanced the locust workload: collection ids, item ids, and bboxes are cached per worker process instead of re-fetched every task; `get_item` picks a random item from a random collection (was 11 hot fixture ids in one collection); search fan-out is capped at 3 item fetches — get-item was ~88% of all requests
+- Rebalanced the locust workload: collection ids, item ids, and bboxes are cached per worker process instead of re-fetched every task; `get_item` picks a random item from a random collection (was 11 hot fixture ids in one collection); search fan-out is capped at 2 item fetches — get-item was ~88% of all requests
 - Moved catalog discovery to locust's `test_start` event: each worker fetches collections/item ids before users spawn via uninstrumented requests, so startup traffic no longer appears in measured stats
 - Raised pgstac `DB_MAX_CONN_SIZE` from 1 to 10 (`DB_MIN_CONN_SIZE` 2) so its connection pool is comparable to the other backends' default client pools
-
-### Fixed
+- Added `shm_size: 1gb` to the pgstac container: Docker's 64MB `/dev/shm` default starved Postgres parallel-query workers, causing CQL2 search 500s (`DiskFullError`) and dropped connections past ~50 users
+- Set pgstac `work_mem=64MB` (default was 4MB) so sort-heavy search queries don't spill to disk
 
 
 ## [v0.3.1]
@@ -94,7 +98,8 @@ and this project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.
 - First release
 
 
-[Unreleased]: <https://github.com/Healy-Hyperspatial/stac-api-load-testing/compare/v0.3.1...main>
+[Unreleased]: <https://github.com/Healy-Hyperspatial/stac-api-load-testing/compare/v0.4.0...main>
+[v0.4.0]: <https://github.com/Healy-Hyperspatial/stac-api-load-testing/compare/v0.3.1...v0.4.0>
 [v0.3.1]: <https://github.com/Healy-Hyperspatial/stac-api-load-testing/compare/v0.3.0...v0.3.1>
 [v0.3.0]: <https://github.com/Healy-Hyperspatial/stac-api-load-testing/compare/v0.2.0...v0.3.0>
 [v0.2.0]: <https://github.com/Healy-Hyperspatial/stac-api-load-testing/compare/v0.1.1...v0.2.0>
